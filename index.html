@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="color-scheme" content="only light">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Free AI Image Upscaler</title>
+<style>
+:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);--bg:#f6f7fb;--card:#fff;--ink:#1d2433;--mut:#667085;--line:#dfe3ec;--acc:#3b5bdb}
+html{background:#f6f7fb;color:#1d2433;color-scheme:only light;scroll-padding-top:env(safe-area-inset-top,0px)}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;padding:20px}
+.wrap{max-width:860px;margin:0 auto}
+h1{font-size:24px;margin:0 0 4px}
+p.sub{margin:0 0 18px;color:var(--mut)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px;margin-bottom:16px}
+#drop{border:2px dashed var(--line);border-radius:12px;padding:36px 16px;text-align:center;cursor:pointer;color:var(--mut)}
+#drop.over{border-color:var(--acc);background:#eef2ff}
+.row{display:flex;flex-wrap:wrap;gap:16px;align-items:center}
+label{font-size:14px;color:var(--mut);display:flex;flex-direction:column;gap:6px}
+select,input[type=range]{min-width:150px}
+select{padding:8px;border:1px solid var(--line);border-radius:8px;background:#fff;color:var(--ink)}
+button{background:var(--acc);color:#fff;border:0;border-radius:10px;padding:11px 20px;font-size:15px;cursor:pointer}
+button:disabled{opacity:.5;cursor:default}
+button.alt{background:#fff;color:var(--acc);border:1px solid var(--acc)}
+.cmp{position:relative;overflow:hidden;border-radius:10px;border:1px solid var(--line);background:repeating-conic-gradient(#eee 0 25%,#fff 0 50%) 0 0/16px 16px;max-width:100%;user-select:none;touch-action:none}
+.cmp canvas,.cmp img{display:block;width:100%;height:auto}
+#before{position:absolute;inset:0;clip-path:inset(0 50% 0 0)}
+#bar{position:absolute;top:0;bottom:0;left:50%;width:3px;background:var(--acc);transform:translateX(-1px)}
+.tag{position:absolute;top:8px;background:rgba(29,36,51,.75);color:#fff;font-size:12px;padding:3px 8px;border-radius:6px}
+.hide{display:none}
+#info{font-size:14px;color:var(--mut)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Free AI Image Upscaler</h1>
+  <p class="sub">Enlarge images up to 4× with an open-source AI model (ESRGAN) running right in your browser. No login, no limits, and your photos never leave your device.</p>
+
+  <div class="card">
+    <div id="drop">Drop an image here, or tap to choose one (PNG, JPG, WebP)</div>
+    <input id="file" type="file" accept="image/*" class="hide">
+  </div>
+
+  <div class="card hide" id="ctl">
+    <div class="row">
+      <label>Scale
+        <select id="scale"><option value="2">2×</option><option value="3">3×</option><option value="4">4×</option></select>
+      </label>
+      <label>Engine
+        <select id="eng"><option value="ai">AI (ESRGAN)</option><option value="classic">Classic (fast)</option></select>
+      </label>
+      <label>Sharpening: <span id="sv">0.2</span>
+        <input id="sharp" type="range" min="0" max="1.5" step="0.1" value="0.2">
+      </label>
+      <button id="go">Upscale</button>
+      <button id="dl" class="alt hide">Download PNG</button>
+    </div>
+    <p id="info"></p>
+  </div>
+
+  <div class="card hide" id="out">
+    <div class="cmp" id="cmp">
+      <canvas id="after"></canvas>
+      <canvas id="before"></canvas>
+      <div id="bar"></div>
+      <span class="tag" style="left:8px">Original</span>
+      <span class="tag" style="right:8px">Upscaled</span>
+    </div>
+    <p id="hint" style="font-size:13px;color:var(--mut);margin:10px 0 0">Drag across the image to compare.</p>
+  </div>
+</div>
+
+<script>
+(function(){
+  var MAX=8192, $=function(i){return document.getElementById(i)};
+  var img=null, result=null, name='image';
+  var drop=$('drop'), file=$('file');
+
+  drop.onclick=function(){file.click()};
+  drop.ondragover=function(e){e.preventDefault();drop.classList.add('over')};
+  drop.ondragleave=function(){drop.classList.remove('over')};
+  drop.ondrop=function(e){e.preventDefault();drop.classList.remove('over');load(e.dataTransfer.files[0])};
+  file.onchange=function(){load(file.files[0])};
+  $('sharp').oninput=function(){$('sv').textContent=this.value};
+
+  function load(f){
+    if(!f||!f.type.startsWith('image/'))return;
+    name=f.name.replace(/\.[^.]+$/,'');
+    var u=URL.createObjectURL(f), i=new Image();
+    i.onload=function(){
+      img=i; result=null;
+      $('ctl').classList.remove('hide'); $('out').classList.add('hide'); $('dl').classList.add('hide');
+      $('info').textContent='Loaded: '+i.naturalWidth+' × '+i.naturalHeight+' px';
+    };
+    i.src=u;
+  }
+
+  // Step-wise doubling with high-quality smoothing gives cleaner results than one big jump.
+  function resize(src,w,h){
+    var cw=src.width,ch=src.height,cur=src;
+    while(cw<w||ch<h){
+      var nw=Math.min(w,Math.round(cw*2)),nh=Math.min(h,Math.round(ch*2));
+      var c=document.createElement('canvas');c.width=nw;c.height=nh;
+      var x=c.getContext('2d');x.imageSmoothingEnabled=true;x.imageSmoothingQuality='high';
+      x.drawImage(cur,0,0,nw,nh);cur=c;cw=nw;ch=nh;
+    }
+    return cur;
+  }
+
+  // Unsharp mask: original + amount * (original - blurred)
+  function sharpen(c,amount){
+    if(amount<=0)return;
+    var w=c.width,h=c.height,ctx=c.getContext('2d');
+    var b=document.createElement('canvas');b.width=w;b.height=h;
+    var bx=b.getContext('2d');bx.filter='blur(1px)';bx.drawImage(c,0,0);
+    var o=ctx.getImageData(0,0,w,h),d=o.data,bl=bx.getImageData(0,0,w,h).data;
+    for(var i=0;i<d.length;i+=4){
+      for(var k=0;k<3;k++){
+        var v=d[i+k]+amount*(d[i+k]-bl[i+k]);
+        d[i+k]=v<0?0:v>255?255:v;
+      }
+    }
+    ctx.putImageData(o,0,0);
+  }
+
+
+  // ---- AI engine: UpscalerJS + ESRGAN (MIT). Loaded on demand; needs a normal web host. ----
+  var TF='https://esm.sh/@tensorflow/tfjs@4.22.0';
+  var UP='https://esm.sh/upscaler?deps=@tensorflow/tfjs@4.22.0';
+  var MODEL=function(s){return 'https://esm.sh/@upscalerjs/esrgan-medium/'+s+'x?deps=@tensorflow/tfjs@4.22.0'};
+  var cache={};
+  async function aiUpscale(s,onP){
+    if(!cache.U){await import(TF);cache.U=(await import(UP)).default;}
+    if(!cache[s]){var m=(await import(MODEL(s))).default;cache[s]=new cache.U({model:m});}
+    var src=document.createElement('canvas');src.width=img.naturalWidth;src.height=img.naturalHeight;
+    src.getContext('2d').drawImage(img,0,0);
+    var data=await cache[s].upscale(src,{patchSize:64,padding:4,progress:onP});
+    var im=new Image();im.src=data;await im.decode();
+    var c=document.createElement('canvas');c.width=im.naturalWidth;c.height=im.naturalHeight;
+    c.getContext('2d').drawImage(im,0,0);return c;
+  }
+  $('go').onclick=function(){
+    if(!img)return;
+    var s=+$('scale').value,w=img.naturalWidth*s,h=img.naturalHeight*s;
+    if(w>MAX||h>MAX){
+      var f=Math.min(MAX/w,MAX/h);w=Math.floor(w*f);h=Math.floor(h*f);
+      $('info').textContent='Capped at '+MAX+' px per side to keep your browser stable.';
+    }
+    $('go').disabled=true;$('go').textContent='Working…';
+    if($('eng').value==='ai'){
+      $('info').textContent='Loading AI model (first run downloads a few MB)…';
+      aiUpscale(s,function(p){$('info').textContent='AI upscaling… '+Math.round(p*100)+'%'}).then(function(out){
+        sharpen(out,+$('sharp').value);result=out;show(out);
+        $('info').textContent='Done (AI): '+img.naturalWidth+'×'+img.naturalHeight+' → '+out.width+'×'+out.height+' px';
+        $('dl').classList.remove('hide');
+      }).catch(function(e){
+        console.error(e);
+        $('info').textContent='The AI model could not load here (it must be hosted on a normal website, and needs an internet connection). Switch Engine to Classic, or see the setup note.';
+      }).finally(function(){$('go').disabled=false;$('go').textContent='Upscale'});
+      return;
+    }
+    setTimeout(function(){
+      try{
+        var base=document.createElement('canvas');base.width=img.naturalWidth;base.height=img.naturalHeight;
+        base.getContext('2d').drawImage(img,0,0);
+        var r=resize(base,w,h);
+        var out=document.createElement('canvas');out.width=w;out.height=h;
+        out.getContext('2d').drawImage(r,0,0);
+        sharpen(out,+$('sharp').value);
+        result=out;
+        show(out);
+        $('info').textContent='Done: '+img.naturalWidth+'×'+img.naturalHeight+' → '+w+'×'+h+' px';
+        $('dl').classList.remove('hide');
+      }catch(e){$('info').textContent='That image is too large for this device. Try a smaller scale.'}
+      $('go').disabled=false;$('go').textContent='Upscale';
+    },30);
+  };
+
+  function show(out){
+    var a=$('after'),b=$('before');
+    a.width=out.width;a.height=out.height;a.getContext('2d').drawImage(out,0,0);
+    b.width=out.width;b.height=out.height;
+    var x=b.getContext('2d');x.imageSmoothingEnabled=false;x.drawImage(img,0,0,out.width,out.height);
+    $('out').classList.remove('hide');setPos(50);
+  }
+
+  function setPos(p){
+    p=Math.max(0,Math.min(100,p));
+    $('before').style.clipPath='inset(0 '+(100-p)+'% 0 0)';
+    $('bar').style.left=p+'%';
+  }
+  var cmp=$('cmp'),down=false;
+  function mv(e){var r=cmp.getBoundingClientRect();setPos((e.clientX-r.left)/r.width*100)}
+  cmp.onpointerdown=function(e){down=true;mv(e)};
+  window.onpointerup=function(){down=false};
+  window.onpointermove=function(e){if(down)mv(e)};
+
+  $('dl').onclick=function(){
+    if(!result)return;
+    result.toBlob(function(bl){
+      var a=document.createElement('a');a.href=URL.createObjectURL(bl);
+      a.download=name+'-upscaled.png';document.body.appendChild(a);a.click();a.remove();
+    },'image/png');
+  };
+})();
+</script>
+</body>
+</html>
